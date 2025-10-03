@@ -13,7 +13,7 @@ services:
       retries: 20
 
   backend:
-    image: christopher12273/lemp-backend:lastest
+    image: christopher12273/lemp-backend:latest
     environment:
       DB_HOST: ${DB_HOST}
       DB_USER: ${DB_USER}

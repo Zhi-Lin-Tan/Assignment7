@@ -1,0 +1,93 @@
+name: CI/CD Pipeline for LEMP App
+
+# This workflow triggers on a push event to the "main" branch
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # --- JOB 1: Build images and push to Docker Hub ---
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out your code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Docker Buildx for optimized builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Step 3: Log in to Docker Hub using a token
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 4: Build and push the backend image
+      - name: Build and push Backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/lemp-backend:latest
+
+      # Step 5: Build and push the frontend image
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/lemp-frontend:latest
+
+  # --- JOB 2: Deploy the application to the VM ---
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push # This job runs only after the "build-and-push" job succeeds
+    steps:
+      # Step 1: Check out the code (to get docker-compose files, etc.)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Install the SSH private key
+      - name: Install SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_KEY }}
+
+      # Step 3: Trust the server's SSH host key
+      - name: Add SSH host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      # Step 4: Create the .env file on the VM (with hardcoded values)
+      - name: Create .env file on VM
+        run: |
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            mkdir -p /opt/lemp && \
+            echo 'MYSQL_ROOT_PASSWORD=supersecretroot' > /opt/lemp/.env && \
+            echo 'DB_HOST=db' >> /opt/lemp/.env && \
+            echo 'DB_USER=appuser' >> /opt/lemp/.env && \
+            echo 'DB_PASSWORD=changeme' >> /opt/lemp/.env && \
+            echo 'DB_NAME=appdb' >> /opt/lemp/.env
+          "
+
+      # Step 5: Copy required deployment files to the VM
+      - name: Copy deployment files to VM
+        run: |
+          scp -r docker-compose.prod.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/lemp/docker-compose.yml
+          scp -r db/init ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/lemp/db/
+
+      # Step 6: Pull the latest images and restart services on the VM
+      - name: Deploy application on VM
+        run: |
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            cd /opt/lemp && \
+            docker compose --env-file .env pull && \
+            docker compose --env-file .env up -d
+          "
